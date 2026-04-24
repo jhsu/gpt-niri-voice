@@ -75,16 +75,13 @@ What it does:
 
 Current tools:
 
-- `focus_window`
-- `focus_previous_window`
-- `run_local_bash`
-- `describe_audio_setup`
+- `focus_window` — searches `niri msg windows` for the best matching app name, window title, or phrase, then focuses it.
+- `focus_previous_window` — focuses the last window that a tool-driven focus action switched away from.
 
 Notes:
 
-- `focus_window` is real and uses `niri msg windows` plus `niri msg action focus-window <window-id>`.
-- `focus_previous_window` focuses the last window that a tool-driven focus action switched away from.
-- `run_local_bash` is still placeholder-only. Swap `runPlaceholderTool()` in `index.ts` to run real `Bun.$` shell commands later.
+- `focus_window` uses `niri msg windows` plus `niri msg action focus-window --id <window-id>`.
+- `focus_previous_window` only works after this session has switched away from a focused window.
 - The default model is `gpt-realtime-1.5` because that is what this script is configured for. If your account expects a different model ID such as `gpt-realtime`, change `OPENAI_REALTIME_MODEL` in `.env`.
 - Use `OPENAI_MAX_OUTPUT_TOKENS` to further shrink or relax the assistant confirmation length. The default is `128` so tool calls still have enough budget.
 
