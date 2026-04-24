@@ -1,0 +1,29 @@
+{
+  "name": "gpt-niri-voice",
+  "version": "0.1.0",
+  "description": "Realtime voice CLI for focusing Niri windows through the OpenAI Realtime API.",
+  "module": "index.ts",
+  "type": "module",
+  "bin": {
+    "gpt-niri-voice": "./index.ts"
+  },
+  "scripts": {
+    "start": "bun run ./index.ts run",
+    "doctor": "bun run ./index.ts doctor",
+    "check": "tsc --noEmit",
+    "build:bin": "bun run ./scripts/build-release.ts --binary-only",
+    "build:release": "bun run ./scripts/build-release.ts"
+  },
+  "files": [
+    "index.ts",
+    "README.md",
+    ".env.example",
+    "scripts/install.sh"
+  ],
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
