@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { existsSync } from "node:fs";
+import { createConnection } from "node:net";
 import packageJson from "./package.json";
 
 type JsonRecord = Record<string, unknown>;
@@ -21,11 +22,19 @@ type RealtimeEvent = JsonRecord & {
 };
 
 type NiriWindow = {
-  id: string;
+  id: number;
   title: string;
   appId: string;
-  workspaceId: string;
+  workspaceId: number | null;
   focused: boolean;
+};
+
+type NiriIpcWindow = {
+  id: number;
+  title?: string | null;
+  app_id?: string | null;
+  workspace_id?: number | null;
+  is_focused?: boolean;
 };
 
 const APP_NAME = packageJson.name;
@@ -93,7 +102,7 @@ let microphoneStarted = false;
 let shuttingDown = false;
 let microphoneProcess: ReturnType<typeof Bun.spawn> | null = null;
 let socket: WebSocket | null = null;
-let previousFocusedWindowId: string | null = null;
+let previousFocusedWindowId: number | null = null;
 
 function loadRuntimeConfig(): AppConfig {
   return {
@@ -151,7 +160,7 @@ Commands:
   doctor   Check required environment variables and external dependencies.
 
 Runtime requirements:
-  - Linux with Niri available on PATH
+  - Linux running inside Niri with NIRI_SOCKET set
   - ffmpeg available on PATH
   - OPENAI_API_KEY set in the environment or a local .env file
 
@@ -183,7 +192,8 @@ function printDoctorCheck(ok: boolean, label: string, detail: string) {
 async function runDoctor() {
   const config = loadRuntimeConfig();
   const ffmpegPath = await which("ffmpeg");
-  const niriPath = await which("niri");
+  const niriSocketPath = process.env.NIRI_SOCKET ?? "";
+  const niriSocketPresent = Boolean(niriSocketPath && existsSync(niriSocketPath));
   const envFilePresent = existsSync(".env");
 
   console.log(`${APP_NAME} ${APP_VERSION}`);
@@ -191,13 +201,17 @@ async function runDoctor() {
   printDoctorCheck(Boolean(config.apiKey), "OPENAI_API_KEY", config.apiKey ? "set" : "not set");
   printDoctorCheck(Boolean(envFilePresent), ".env", envFilePresent ? "present" : "not present");
   printDoctorCheck(Boolean(ffmpegPath), "ffmpeg", ffmpegPath ?? "not found on PATH");
-  printDoctorCheck(Boolean(niriPath), "niri", niriPath ?? "not found on PATH");
+  printDoctorCheck(
+    niriSocketPresent,
+    "NIRI_SOCKET",
+    niriSocketPath ? `${niriSocketPath}${niriSocketPresent ? "" : " (missing)"}` : "not set",
+  );
   console.log(`[info] model: ${config.model}`);
   console.log(`[info] voice: ${config.voice}`);
   console.log(`[info] mic device: ${config.micDevice}`);
   console.log(`[info] input rate: ${config.inputRate} Hz`);
 
-  return Boolean(config.apiKey && ffmpegPath && niriPath);
+  return Boolean(config.apiKey && ffmpegPath && niriSocketPresent);
 }
 
 function sendEvent(ws: WebSocket, event: RealtimeEvent) {
@@ -247,37 +261,132 @@ function parseJsonRecord(value: string | undefined) {
   return parsed as JsonRecord;
 }
 
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+async function sendNiriRequest(request: unknown) {
+  const path = process.env.NIRI_SOCKET;
+
+  if (!path) {
+    throw new Error("NIRI_SOCKET is not set. Are you running inside Niri?");
+  }
+
+  return await new Promise<unknown>((resolve, reject) => {
+    const socket = createConnection({ path });
+    let buffer = "";
+    let settled = false;
+
+    function settle(error: Error | null, value?: unknown) {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      socket.end();
+
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve(value);
+    }
+
+    socket.on("connect", () => {
+      socket.write(`${JSON.stringify(request)}\n`);
+    });
+
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex === -1) {
+        return;
+      }
+
+      const line = buffer.slice(0, newlineIndex);
+      let reply: unknown;
+
+      try {
+        reply = JSON.parse(line);
+      } catch (error) {
+        settle(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+
+      if (!isJsonRecord(reply)) {
+        settle(new Error("Niri returned an invalid IPC reply."));
+        return;
+      }
+
+      if ("Err" in reply) {
+        settle(new Error(String(reply.Err)));
+        return;
+      }
+
+      if (!("Ok" in reply)) {
+        settle(new Error("Niri returned an IPC reply without Ok or Err."));
+        return;
+      }
+
+      settle(null, reply.Ok);
+    });
+
+    socket.on("end", () => {
+      if (!settled) {
+        settle(new Error("Niri closed the IPC socket before replying."));
+      }
+    });
+
+    socket.on("error", (error) => {
+      settle(error);
+    });
+  });
+}
+
+function niriIpcWindowToWindow(window: NiriIpcWindow): NiriWindow {
+  return {
+    id: window.id,
+    title: window.title ?? "",
+    appId: window.app_id ?? "",
+    workspaceId: window.workspace_id ?? null,
+    focused: window.is_focused ?? false,
+  };
+}
+
+async function getNiriWindows() {
+  const response = await sendNiriRequest("Windows");
+
+  if (!isJsonRecord(response) || !Array.isArray(response.Windows)) {
+    throw new Error("Niri returned an unexpected Windows response.");
+  }
+
+  return response.Windows.map((window) => {
+    if (!isJsonRecord(window) || typeof window.id !== "number") {
+      throw new Error("Niri returned an invalid window entry.");
+    }
+
+    return niriIpcWindowToWindow(window as NiriIpcWindow);
+  });
+}
+
+async function focusNiriWindow(id: number) {
+  await sendNiriRequest({
+    Action: {
+      FocusWindow: {
+        id,
+      },
+    },
+  });
+}
+
 function normalizeForMatch(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 function uniqueTokens(value: string) {
   return Array.from(new Set(normalizeForMatch(value).split(/\s+/).filter(Boolean)));
-}
-
-function parseNiriWindows(output: string) {
-  return output
-    .trim()
-    .split(/\n(?=Window ID \d+:)/)
-    .map((block) => {
-      const idMatch = block.match(/^Window ID (\d+):(?: \((focused)\))?/m);
-      const titleMatch = block.match(/^  Title: "([\s\S]*?)"$/m);
-      const appIdMatch = block.match(/^  App ID: "([\s\S]*?)"$/m);
-      const workspaceMatch = block.match(/^  Workspace ID: (\d+)$/m);
-
-      if (!idMatch || !titleMatch || !appIdMatch || !workspaceMatch) {
-        return null;
-      }
-
-      return {
-        id: idMatch[1] ?? "",
-        title: titleMatch[1] ?? "",
-        appId: appIdMatch[1] ?? "",
-        workspaceId: workspaceMatch[1] ?? "",
-        focused: idMatch[2] === "focused",
-      } satisfies NiriWindow;
-    })
-    .filter((window): window is NiriWindow => window !== null);
 }
 
 function summarizeWindow(window: NiriWindow) {
@@ -346,8 +455,7 @@ async function focusWindow(query: string) {
     throw new Error("focus_window requires a non-empty query.");
   }
 
-  const windowsOutput = await Bun.$`niri msg windows`.text();
-  const windows = parseNiriWindows(windowsOutput);
+  const windows = await getNiriWindows();
   const currentFocusedWindow = windows.find((window) => window.focused) ?? null;
 
   console.log(`[focus_window] query: ${trimmedQuery}`);
@@ -395,15 +503,15 @@ async function focusWindow(query: string) {
     };
   }
 
-  console.log(`command: niri msg action focus-window --id ${bestMatch.window.id}`);
+  console.log(`niri-ipc: focus-window id=${bestMatch.window.id}`);
 
   if (currentFocusedWindow && currentFocusedWindow.id !== bestMatch.window.id) {
     previousFocusedWindowId = currentFocusedWindow.id;
   }
 
-  await Bun.$`niri msg action focus-window --id ${bestMatch.window.id}`.quiet();
+  await focusNiriWindow(bestMatch.window.id);
 
-  // const windowsAfterFocus = parseNiriWindows(await Bun.$`niri msg windows`.text());
+  // const windowsAfterFocus = await getNiriWindows();
   // const focusedWindowAfter = windowsAfterFocus.find((window) => window.focused);
   // const focusedAfter = focusedWindowAfter?.id === bestMatch.window.id;
 
@@ -449,7 +557,7 @@ async function focusPreviousWindow() {
     };
   }
 
-  const windows = parseNiriWindows(await Bun.$`niri msg windows`.text());
+  const windows = await getNiriWindows();
   const currentFocusedWindow = windows.find((window) => window.focused) ?? null;
   const previousWindow =
     windows.find((window) => window.id === previousFocusedWindowId) ?? null;
@@ -467,14 +575,14 @@ async function focusPreviousWindow() {
   }
 
   console.log(
-    `command: niri msg action focus-window --id ${previousWindow.id}`,
+    `niri-ipc: focus-window id=${previousWindow.id}`,
   );
 
   if (currentFocusedWindow && currentFocusedWindow.id !== previousWindow.id) {
     previousFocusedWindowId = currentFocusedWindow.id;
   }
 
-  await Bun.$`niri msg action focus-window --id ${previousWindow.id}`.quiet();
+  await focusNiriWindow(previousWindow.id);
 
   return {
     ok: true,

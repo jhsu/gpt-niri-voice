@@ -75,12 +75,12 @@ What it does:
 
 Current tools:
 
-- `focus_window` — searches `niri msg windows` for the best matching app name, window title, or phrase, then focuses it.
+- `focus_window` — searches Niri's IPC window list for the best matching app name, window title, or phrase, then focuses it.
 - `focus_previous_window` — focuses the last window that a tool-driven focus action switched away from.
 
 Notes:
 
-- `focus_window` uses `niri msg windows` plus `niri msg action focus-window --id <window-id>`.
+- Niri integration uses the `$NIRI_SOCKET` IPC socket directly instead of shelling out to `niri msg`.
 - `focus_previous_window` only works after this session has switched away from a focused window.
 - The default model is `gpt-realtime-1.5` because that is what this script is configured for. If your account expects a different model ID such as `gpt-realtime`, change `OPENAI_REALTIME_MODEL` in `.env`.
 - Use `OPENAI_MAX_OUTPUT_TOKENS` to further shrink or relax the assistant confirmation length. The default is `128` so tool calls still have enough budget.
@@ -88,4 +88,4 @@ Notes:
 Binary/runtime notes:
 
 - The compiled Bun executable autoloads a local `.env` file by default.
-- `doctor` exits non-zero when `OPENAI_API_KEY`, `ffmpeg`, or `niri` are missing.
+- `doctor` exits non-zero when `OPENAI_API_KEY`, `ffmpeg`, or `NIRI_SOCKET` are missing.
