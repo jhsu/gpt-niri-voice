@@ -39,7 +39,7 @@ type NiriIpcWindow = {
 
 const APP_NAME = packageJson.name;
 const APP_VERSION = packageJson.version;
-const DEFAULT_MODEL = "gpt-realtime-1.5";
+const DEFAULT_MODEL = "gpt-realtime-2.1";
 const DEFAULT_VOICE = "marin";
 const DEFAULT_MIC_DEVICE = "default";
 const DEFAULT_INPUT_RATE = 24000;
@@ -381,6 +381,40 @@ async function focusNiriWindow(id: number) {
   });
 }
 
+async function sendToast(title: string, type: "warning") {
+  const process = Bun.spawn(
+    [
+      "qs",
+      "-c",
+      "noctalia-shell",
+      "ipc",
+      "call",
+      "toast",
+      "send",
+      JSON.stringify({ title, type }),
+    ],
+    {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+  );
+
+  if (typeof process.stderr === "number") {
+    return;
+  }
+
+  const [exitCode, stderr] = await Promise.all([
+    process.exited,
+    new Response(process.stderr).text(),
+  ]);
+
+  if (exitCode !== 0) {
+    const message = stderr.trim();
+    console.error(`[toast] failed to send toast${message ? `: ${message}` : ""}`);
+  }
+}
+
 function normalizeForMatch(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
@@ -487,6 +521,8 @@ async function focusWindow(query: string) {
   const bestMatch = rankedWindows[0];
 
   if (!bestMatch || bestMatch.score <= 0) {
+    await sendToast(`Window query failed: ${trimmedQuery}`, "warning");
+
     return {
       ok: false,
       focusedAfter: false,
